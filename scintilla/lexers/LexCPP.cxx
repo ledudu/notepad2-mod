@@ -83,6 +83,31 @@ static bool followsReturnKeyword(StyleContext &sc, LexAccessor &styler) {
 	return !*s;
 }
 
+static void highlightTaskMarker(StyleContext &sc, LexAccessor &styler,
+		int activity, WordList &markerList, bool caseSensitive){
+	if ((isoperator(sc.chPrev) || IsASpace(sc.chPrev)) && markerList.Length()) {
+		const int lengthMarker = 50;
+		char marker[lengthMarker+1];
+		int currPos = (int) sc.currentPos;
+		int i = 0;
+		while (i < lengthMarker) {
+			char ch = styler.SafeGetCharAt(currPos + i);
+			if (IsASpace(ch) || isoperator(ch)) {
+				break;
+			}
+			if (caseSensitive)
+				marker[i] = ch;
+			else
+				marker[i] = tolower(ch);
+			i++;
+		}
+		marker[i] = '\0';
+		if (markerList.InList(marker)) {
+			sc.SetState(SCE_C_TASKMARKER|activity);
+		}
+	}
+}
+
 static std::string GetRestOfLine(LexAccessor &styler, int start, bool allowSpace) {
 	std::string restOfLine;
 	int i =0;
@@ -211,6 +236,7 @@ struct OptionsCPP {
 	bool updatePreprocessor;
 	bool triplequotedStrings;
 	bool hashquotedStrings;
+	bool backQuotedStrings;
 	bool fold;
 	bool foldSyntaxBased;
 	bool foldComment;
@@ -229,6 +255,7 @@ struct OptionsCPP {
 		updatePreprocessor = true;
 		triplequotedStrings = false;
 		hashquotedStrings = false;
+		backQuotedStrings = false;
 		fold = false;
 		foldSyntaxBased = true;
 		foldComment = false;
@@ -249,6 +276,7 @@ static const char *const cppWordLists[] = {
             "Documentation comment keywords",
             "Global classes and typedefs",
             "Preprocessor definitions",
+            "Task marker and error marker keywords",
             0,
 };
 
@@ -273,6 +301,9 @@ struct OptionSetCPP : public OptionSet<OptionsCPP> {
 
 		DefineProperty("lexer.cpp.hashquoted.strings", &OptionsCPP::hashquotedStrings,
 			"Set to 1 to enable highlighting of hash-quoted strings.");
+
+		DefineProperty("lexer.cpp.backquoted.strings", &OptionsCPP::backQuotedStrings,
+			"Set to 1 to enable highlighting of back-quoted raw strings .");
 
 		DefineProperty("fold", &OptionsCPP::fold);
 
@@ -328,6 +359,7 @@ class LexerCPP : public ILexerWithSubStyles {
 	WordList keywords3;
 	WordList keywords4;
 	WordList ppDefinitions;
+	WordList markerList;
 	std::map<std::string, std::string> preprocessorDefinitionsStart;
 	OptionsCPP options;
 	OptionSetCPP osCPP;
@@ -452,6 +484,9 @@ int SCI_METHOD LexerCPP::WordListSet(int n, const char *wl) {
 	case 4:
 		wordListN = &ppDefinitions;
 		break;
+	case 5:
+		wordListN = &markerList;
+		break;
 	}
 	int firstModification = -1;
 	if (wordListN) {
@@ -511,6 +546,7 @@ void SCI_METHOD LexerCPP::Lex(unsigned int startPos, int length, int initStyle, 
 	int visibleChars = 0;
 	bool lastWordWasUUID = false;
 	int styleBeforeDCKeyword = SCE_C_DEFAULT;
+	int styleBeforeTaskMarker = SCE_C_DEFAULT;
 	bool continuationLine = false;
 	bool isIncludePreprocessor = false;
 	bool isStringInPreprocessor = false;
@@ -725,6 +761,9 @@ void SCI_METHOD LexerCPP::Lex(unsigned int startPos, int length, int initStyle, 
 				if (sc.Match('*', '/')) {
 					sc.Forward();
 					sc.ForwardSetState(SCE_C_DEFAULT|activitySet);
+				} else {
+					styleBeforeTaskMarker = SCE_C_COMMENT;
+					highlightTaskMarker(sc, styler, activitySet, markerList, caseSensitive);
 				}
 				break;
 			case SCE_C_COMMENTDOC:
@@ -742,6 +781,9 @@ void SCI_METHOD LexerCPP::Lex(unsigned int startPos, int length, int initStyle, 
 			case SCE_C_COMMENTLINE:
 				if (sc.atLineStart && !continuationLine) {
 					sc.SetState(SCE_C_DEFAULT|activitySet);
+				} else {
+					styleBeforeTaskMarker = SCE_C_COMMENTLINE;
+					highlightTaskMarker(sc, styler, activitySet, markerList, caseSensitive);
 				}
 				break;
 			case SCE_C_COMMENTLINEDOC:
@@ -880,6 +922,12 @@ void SCI_METHOD LexerCPP::Lex(unsigned int startPos, int length, int initStyle, 
 				if (sc.atLineEnd || sc.ch == ')') {
 					sc.SetState(SCE_C_DEFAULT|activitySet);
 				}
+				break;
+			case SCE_C_TASKMARKER:
+				if (isoperator(sc.ch) || IsASpace(sc.ch)) {
+					sc.SetState(styleBeforeTaskMarker|activitySet);
+					styleBeforeTaskMarker = SCE_C_DEFAULT;
+				}
 		}
 
 		if (sc.atLineEnd && !atLineEndBeforeSwitch) {
@@ -899,6 +947,10 @@ void SCI_METHOD LexerCPP::Lex(unsigned int startPos, int length, int initStyle, 
 				sc.Forward(2);
 			} else if (options.hashquotedStrings && sc.Match('#', '\"')) {
 				sc.SetState(SCE_C_HASHQUOTEDSTRING|activitySet);
+				sc.Forward();
+			} else if (options.backQuotedStrings && sc.Match('`')) {
+				sc.SetState(SCE_C_STRINGRAW|activitySet);
+				rawStringTerminator = "`";
 				sc.Forward();
 			} else if (IsADigit(sc.ch) || (sc.ch == '.' && IsADigit(sc.chNext))) {
 				if (lastWordWasUUID) {
